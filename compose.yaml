@@ -1,0 +1,86 @@
+services:
+  redis: &redis
+    image: redis:8.2.10
+    command: [redis-server, /etc/redis/redis.conf]
+    volumes:
+      - ./config/redis.conf:/etc/redis/redis.conf:ro
+      - redis-data:/data
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  redis2:
+    <<: *redis
+    volumes:
+      - ./config/redis.conf:/etc/redis/redis.conf:ro
+      - redis2-data:/data
+
+  postgres:
+    image: postgres:16.15
+    environment:
+      POSTGRES_USER: quota
+      POSTGRES_PASSWORD: quota
+      POSTGRES_DB: quota
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U quota]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  api:
+    build: .
+    environment: &environment
+      REDIS_URL: redis://redis:6379/0
+      REDIS_URLS: redis://redis:6379/0,redis://redis2:6379/0
+      DATABASE_URL: postgresql://quota:quota@postgres:5432/quota
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      redis: {condition: service_healthy}
+      redis2: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  ledger:
+    build: .
+    command: [python, -m, quota.worker]
+    environment: *environment
+    depends_on:
+      redis: {condition: service_healthy}
+      redis2: {condition: service_healthy}
+      postgres: {condition: service_healthy}
+
+  demo:
+    build: .
+    # The marker is written only after the generator's functional checks pass.
+    command: [sh, -c, "python scripts/load.py --url http://api:8080 --rate 200 --seconds 10 --orgs 100 --workers 2 && touch /tmp/quota-demo-completed"]
+    environment: *environment
+    depends_on:
+      api: {condition: service_healthy}
+      ledger: {condition: service_started}
+
+  tests:
+    build: .
+    profiles: [test]
+    command: [pytest, -q]
+    environment:
+      <<: *environment
+      TEST_REDIS_URL: redis://redis:6379/15
+      TEST_REDIS_URLS: redis://redis:6379/15,redis://redis2:6379/15
+      TEST_DATABASE_URL: postgresql://quota:quota@postgres:5432/quota
+    depends_on:
+      redis: {condition: service_healthy}
+      redis2: {condition: service_healthy}
+      postgres: {condition: service_healthy}
+
+volumes:
+  redis-data:
+  redis2-data:
+  postgres-data:

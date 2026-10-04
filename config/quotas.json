@@ -1,0 +1,4 @@
+{
+  "acme": {"container-tracking": 500, "sailing-schedule": 1000},
+  "globex": {"container-tracking": 200, "sailing-schedule": 500}
+}
