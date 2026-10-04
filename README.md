@@ -120,11 +120,21 @@ For separate hosts, install with `pip install '.[test]'`, set `REDIS_URLS` to th
 two comma-separated Redis URLs and set `DATABASE_URL`. Run the API and worker
 in separate terminals:
 
+**Terminal 1 — API**
+
 ```sh
-gunicorn 'quota.api:create_app()' --worker-class aiohttp.GunicornUVLoopWebWorker \
+gunicorn 'quota.api:create_app()' \
+  --worker-class aiohttp.GunicornUVLoopWebWorker \
   --workers 8 --bind 0.0.0.0:8080 --timeout 60
+```
+
+**Terminal 2 — ledger worker**
+
+```sh
 python -m quota.worker
 ```
+
+`./run.sh` starts both automatically.
 
 Run the generator in another terminal or host using the same storage variables:
 
