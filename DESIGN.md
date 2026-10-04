@@ -26,28 +26,38 @@ Balances and receipts use Redis hashes. The scripts update the fields that
 change; they do not decode and rewrite an entire receipt for each transition.
 Request and response bodies remain JSON values inside the receipt.
 
+There are two distinct lookups: Redis checks the organization's quota, while
+the API searches the local `SAILINGS` dictionary in `quota/consumer.py` for
+route information. A new successful request follows this journey:
+
 ```mermaid
-flowchart LR
-    subgraph APIWorkers["Python API workers (8 processes)"]
-        API["Request handler + quota library"]
-        Search["Schedule lookup<br/>local fixed dataset"]
-        API -->|"pending reservation"| Search
-        Search -->|"lookup outcome"| API
+sequenceDiagram
+    actor Client
+    participant API as API (one of 8 workers)
+    participant Redis as Redis (organization's shard)
+    participant Ledger as Ledger worker
+    participant PG as PostgreSQL
+
+    Client->>API: POST /orgs/acme/schedules/search + Idempotency-Key
+    API->>Redis: Check quota and reserve units atomically
+    Redis-->>API: Reservation accepted
+    API->>API: Look up routes in local sailing dataset
+    API->>Redis: Confirm usage and append final Stream event
+    Redis-->>API: Stored final outcome
+    par Client response
+        API-->>Client: 200 OK with schedules
+    and Independent background ledger
+        Ledger->>Redis: Read final Stream events
+        Redis-->>Ledger: Events
+        Ledger->>PG: Insert events and update totals without duplicates
+        PG-->>Ledger: Transaction committed
+        Ledger->>Redis: Acknowledge and delete committed events
     end
-    API -->|"reserve units on organization's shard"| Redis["Redis shard 0 or 1<br/>Lua + AOF"]
-    Redis -->|"reservation result"| API
-    API -->|"confirm or release; append final event"| Redis
-    Redis -.->|"Stream events"| Worker["Ledger worker"]
-    Worker -->|"insert events and update totals<br/>deduplicated batch transaction"| PG["PostgreSQL"]
-    PG -->|"commit confirmed"| Worker
-    Worker -->|"acknowledge and delete committed events"| Redis
 ```
 
-The schedule lookup searches the small sailing dataset in `quota/consumer.py`
-inside the API process. The API reserves quota before the lookup, then confirms
-usage or releases the reservation on a definite failure. The ledger worker
-copies final events from Redis Streams into PostgreSQL asynchronously; the API
-response does not wait for that SQL commit.
+The API response does not wait for PostgreSQL. Insufficient quota returns 429
+before any schedule lookup; a definite lookup failure releases the reservation
+and returns 422. Retries and uncertain outcomes are described below.
 
 ## Concurrent correctness
 
