@@ -28,14 +28,26 @@ Request and response bodies remain JSON values inside the receipt.
 
 ```mermaid
 flowchart LR
-    API["Python API workers"] -->|"organization's owner"| Redis["Redis shard 0 or 1<br/>Lua + AOF"]
-    Redis -->|"stored reservation"| Search["Schedule lookup"]
-    Search -->|"confirm or release"| Redis
-    Redis -->|"Stream events"| Worker["Ledger worker"]
-    Worker -->|"deduplicated batch transaction"| PG["PostgreSQL"]
-    PG -->|"commit"| Worker
-    Worker -->|"acknowledge and delete"| Redis
+    subgraph APIWorkers["Python API workers (8 processes)"]
+        API["Request handler + quota library"]
+        Search["Schedule lookup<br/>local fixed dataset"]
+        API -->|"pending reservation"| Search
+        Search -->|"lookup outcome"| API
+    end
+    API -->|"reserve units on organization's shard"| Redis["Redis shard 0 or 1<br/>Lua + AOF"]
+    Redis -->|"reservation result"| API
+    API -->|"confirm or release; append final event"| Redis
+    Redis -.->|"Stream events"| Worker["Ledger worker"]
+    Worker -->|"insert events and update totals<br/>deduplicated batch transaction"| PG["PostgreSQL"]
+    PG -->|"commit confirmed"| Worker
+    Worker -->|"acknowledge and delete committed events"| Redis
 ```
+
+The schedule lookup searches the small sailing dataset in `quota/consumer.py`
+inside the API process. The API reserves quota before the lookup, then confirms
+usage or releases the reservation on a definite failure. The ledger worker
+copies final events from Redis Streams into PostgreSQL asynchronously; the API
+response does not wait for that SQL commit.
 
 ## Concurrent correctness
 
